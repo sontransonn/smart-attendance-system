@@ -1,0 +1,11 @@
+opencv-contrib-python
+mysql-connector-python
+fastapi
+uvicorn
+mediapipe
+pgvector
+psycopg2-binary
+onnxruntime
+facenet-pytorch
+torch
+torchvision
