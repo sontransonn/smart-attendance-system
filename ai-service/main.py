@@ -15,10 +15,8 @@ from torchvision.models import mobilenet_v2
 from torchvision import transforms
 from PIL import Image
 
-# --- 1. CẤU HÌNH & KHỞI TẠO MODEL ---
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# MediaPipe Face Detector
 model_path = "models/blaze_face_short_range.tflite"
 options = vision.FaceDetectorOptions(
     base_options=python.BaseOptions(model_asset_path=model_path),
@@ -27,11 +25,9 @@ options = vision.FaceDetectorOptions(
 )
 detector = vision.FaceDetector.create_from_options(options)
 
-# FaceNet (Recognition)
 facenet_model = InceptionResnetV1(pretrained='vggface2').eval().to(device)
 
 
-# SpoofNet (Anti-spoofing dựa trên notebook của bạn)
 class SpoofNet(nn.Module):
     def __init__(self):
         super(SpoofNet, self).__init__()
@@ -55,7 +51,6 @@ class SpoofNet(nn.Module):
 
 spoof_model = SpoofNet().to(device)
 try:
-    # Load trọng số từ file .pt đã train
     checkpoint = torch.load("models/mobilenetv2-best.pt", map_location=device)
     spoof_model.load_state_dict(checkpoint['state_dict'])
     spoof_model.eval()
@@ -63,14 +58,12 @@ try:
 except Exception as e:
     print(f"--- Lỗi load Anti-spoofing model: {e} ---")
 
-# Preprocessing cho SpoofNet (Resize 224x224 & Normalize)
 spoof_transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
 
-# --- 2. FASTAPI SETUP ---
 app = FastAPI()
 app.mount("/storage", StaticFiles(directory="storage"), name="storage")
 app.add_middleware(
@@ -80,26 +73,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 class EnrollRequest(BaseModel):
     name: str;
     id: str;
     dept: str;
     images: List[str]
 
-
 class RecognizeRequest(BaseModel):
     image: str
-
 
 def get_db_connection():
     return psycopg2.connect(
         host="localhost", database="postgres", user="postgres",
         password="123456", port="5432"
     )
-
-
-# --- 3. ENDPOINTS QUẢN LÝ ---
 
 @app.get("/api/users")
 async def get_users():
@@ -123,7 +110,6 @@ async def get_users():
     finally:
         if conn: conn.close()
 
-
 @app.get("/api/attendance/logs")
 async def get_attendance_logs():
     conn = None
@@ -146,7 +132,6 @@ async def get_attendance_logs():
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if conn: conn.close()
-
 
 @app.post("/api/enroll")
 async def enroll_user(data: EnrollRequest):
@@ -194,26 +179,20 @@ async def enroll_user(data: EnrollRequest):
     finally:
         if conn: conn.close()
 
-
-# --- 4. LOGIC NHẬN DIỆN & ĐIỂM DANH ---
-
 IN_START = time(6, 0)
 IN_LATE = time(8, 0)
 IN_END = time(10, 0)
-
 
 @app.post("/api/recognize")
 async def recognize_user(data: RecognizeRequest):
     conn = None
     try:
-        # A. Decode Ảnh
         if "base64," in data.image: data.image = data.image.split("base64,")[1]
         img_data = base64.b64decode(data.image)
         img = cv2.imdecode(np.frombuffer(img_data, np.uint8), cv2.IMREAD_COLOR)
         h_orig, w_orig, _ = img.shape
         rgb_frame = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-        # B. Phát hiện mặt
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
         detection_result = detector.detect(mp_image)
 
@@ -224,13 +203,11 @@ async def recognize_user(data: RecognizeRequest):
         face_crop = rgb_frame[max(0, bbox.origin_y):bbox.origin_y + bbox.height,
         max(0, bbox.origin_x):bbox.origin_x + bbox.width]
 
-        # C. KIỂM TRA CHỐNG GIẢ MẠO (ANTI-SPOOFING)
         pil_face = Image.fromarray(face_crop)
         input_spoof = spoof_transform(pil_face).unsqueeze(0).to(device)
         with torch.no_grad():
-            liveness_score = spoof_model(input_spoof).item()  # Đầu ra Sigmoid (0-1)
+            liveness_score = spoof_model(input_spoof).item()  
 
-        # Ngưỡng 0.5 từ notebook (1 là Real, 0 là Spoof)
         if liveness_score < 0.5:
             print(f"DEBUG: Spoofing detected! Score: {liveness_score:.4f}")
             return {
@@ -241,13 +218,11 @@ async def recognize_user(data: RecognizeRequest):
                 }
             }
 
-        # D. Trích xuất Embedding (Nếu là người thật)
         face_resized = cv2.resize(face_crop, (160, 160))
         face_tensor = (torch.tensor(face_resized).permute(2, 0, 1).float().unsqueeze(0).to(device) - 127.5) / 128.0
         with torch.no_grad():
             current_embed = facenet_model(face_tensor).cpu().numpy().flatten()
 
-        # E. So sánh Database
         conn = get_db_connection();
         cur = conn.cursor()
         cur.execute("SELECT id, full_name, face_embedding FROM users WHERE face_embedding IS NOT NULL")
@@ -260,14 +235,12 @@ async def recognize_user(data: RecognizeRequest):
                 min_dist = dist
                 if dist < 0.85: identity, user_id_found = name, uid
 
-        # F. Logic Điểm danh (6-8h, 8-10h)
         attendance_status = ""
         if user_id_found:
             now = datetime.now()
             cur_time = now.time()
             today = now.date()
 
-            # Kiểm tra trạng thái đã lưu trong ngày
             cur.execute("SELECT status FROM attendance WHERE user_id = %s AND check_in_time::date = %s",
                         (user_id_found, today))
             check_exist = cur.fetchone()
@@ -304,5 +277,4 @@ async def recognize_user(data: RecognizeRequest):
 
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run(app, host="0.0.0.0", port=8000)
